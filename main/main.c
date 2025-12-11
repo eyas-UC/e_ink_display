@@ -55,7 +55,7 @@ static void epaper_gpio_init(void);
 static esp_err_t epaper_spi_init(void);
 static void epaper_write_command(uint8_t command);
 static void epaper_write_data(uint8_t data);
-static void epaper_write_data_buffer_chunked(const uint8_t *data, uint32_t length);
+static void epaper_write_data_buffer_chunked(const uint8_t command, const uint8_t *data, uint32_t length);
 static void epaper_busy_wait(void);
 static void epaper_reset(void);
 static void epaper_init(void);
@@ -187,12 +187,14 @@ static void epaper_write_data(uint8_t data)
 }
 
 // Write data buffer to EPD in chunks
-static void epaper_write_data_buffer_chunked(const uint8_t *data, uint32_t length) {
+static void epaper_write_data_buffer_chunked(const uint8_t command, const uint8_t *data, uint32_t length)
+{
     if (length == 0) return;
     
-    gpio_set_level(EPAPER_DC_PIN, 1);  // DC high for data
-    
+    // gpio_set_level(EPAPER_DC_PIN, 1);  // DC high for data
+    epaper_set_memory_area(0, 0, EPD_WIDTH - 1, EPD_HEIGHT - 1);
     uint32_t bytes_sent = 0;
+    epaper_write_command(command);
     gpio_set_level(EPAPER_CS_PIN, 0);  // start comms
     while (bytes_sent < length) {
         uint32_t chunk_size = length - bytes_sent;
@@ -304,7 +306,7 @@ static void writeScreenBuffer(uint8_t command, uint8_t value)
 {
     // to clear 0xff
     epaper_set_memory_area(0, 0, EPD_WIDTH - 1, EPD_HEIGHT - 1);
-    epaper_write_command(0xff);
+    epaper_write_command(command);
     gpio_set_level(EPAPER_CS_PIN, 0);  // CS start comms
     for (uint32_t i = 0; i < ((uint32_t) EPD_WIDTH * (uint32_t) EPD_HEIGHT / 8) ; i++)
     {
@@ -337,50 +339,12 @@ static void full_update()
 static void epaper_clear(void)
 {
     ESP_LOGI(TAG, "Clearing display");
-    const static int clear_value = 0x00;
-    writeScreenBuffer(0x24,clear_value);
-    writeScreenBuffer(0x26,clear_value);
+    // const static int clear_value = 0x00;
+    const static int black_off = 0xFF;
+    const static int red_off = 0x00;
+    writeScreenBuffer(0x24,black_off); //black
+    writeScreenBuffer(0x26,red_off); // red
     full_update();
-    // Set full window
-    // epaper_set_memory_area(0, 0, EPD_WIDTH - 1, EPD_HEIGHT - 1);
-    // // epaper_set_memory_pointer(0, 0);
-    
-    // // Send WRITE_RAM command
-    // epaper_write_command(WRITE_RAM);
-    
-    // // Send white data in chunks
-    // ESP_LOGI(TAG, "Sending white data (%d bytes in chunks)...", EPD_BUFFER_SIZE);
-    
-    // // Allocate a chunk buffer for white data
-    // uint8_t *white_chunk = malloc(SPI_MAX_TRANSFER_SIZE);
-    // if (white_chunk == NULL) {
-    //     ESP_LOGE(TAG, "Failed to allocate white chunk buffer");
-    //     return;
-    // }
-    
-    // // Fill chunk with white (0xFF)
-    // memset(white_chunk, 0xFF, SPI_MAX_TRANSFER_SIZE);
-    
-    // uint32_t bytes_sent = 0;
-    // while (bytes_sent < EPD_BUFFER_SIZE) {
-    //     uint32_t chunk_size = EPD_BUFFER_SIZE - bytes_sent;
-    //     if (chunk_size > SPI_MAX_TRANSFER_SIZE) {
-    //         chunk_size = SPI_MAX_TRANSFER_SIZE;
-    //     }
-        
-    //     epaper_write_data_buffer_chunked(white_chunk, chunk_size);
-    //     bytes_sent += chunk_size;
-        
-    //     ESP_LOGD(TAG, "Clear progress: %d/%d bytes", bytes_sent, EPD_BUFFER_SIZE);
-    // }
-    
-    // free(white_chunk);
-    
-    // // Update display
-    // epaper_write_command(DISPLAY_UPDATE_CONTROL_2);
-    // epaper_write_data(0xC7);  // Display update sequence
-    // epaper_write_command(MASTER_ACTIVATION);
-    
     epaper_busy_wait();
     ESP_LOGI(TAG, "Display cleared");
 }
@@ -392,19 +356,19 @@ static void epaper_display(const uint8_t *image_data)
     
     // Set full window
     epaper_set_memory_area(0, 0, EPD_WIDTH - 1, EPD_HEIGHT - 1);
-    // epaper_set_memory_pointer(0, 0);
+    // writeScreenBuffer(0x26, 0xFF); // set red/white
+    // writeScreenBuffer(0x24,0x00); // turn off black
+
     
-    // Send WRITE_RAM command
-    epaper_write_command(WRITE_RAM);
+    // // Send WRITE_RAM command
+    // epaper_write_command(WRITE_RAM);
     
     // Send image data in chunks
-    epaper_write_data_buffer_chunked(image_data, EPD_BUFFER_SIZE);
+    epaper_write_data_buffer_chunked(0x24, image_data, EPD_BUFFER_SIZE);
+    // epaper_write_data_buffer_chunked(0x26, image_data, EPD_BUFFER_SIZE);
     
     // Update display
-    epaper_write_command(DISPLAY_UPDATE_CONTROL_2);
-    epaper_write_data(0xC7);  // Display update sequence
-    epaper_write_command(MASTER_ACTIVATION);
-    
+    full_update();    
     epaper_busy_wait();
     ESP_LOGI(TAG, "Image displayed");
 }
@@ -472,7 +436,7 @@ void epaper_main_task(void *pvParameters)
     
     // Clear display first
     epaper_clear();
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    vTaskDelay(pdMS_TO_TICKS(5000));
     
     // Draw test pattern
     epaper_draw_test_pattern();
@@ -485,7 +449,9 @@ void epaper_main_task(void *pvParameters)
     epaper_clear();
     
     // Wait before sleep
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    vTaskDelay(pdMS_TO_TICKS(5000));
+
+    epaper_clear();
     
     // Sleep
     epaper_sleep();
