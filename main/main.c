@@ -50,6 +50,14 @@ static const char *TAG = "Epaper";
 // SPI handle
 spi_device_handle_t spi;
 
+// Font size enum
+typedef enum {
+    FONT_SIZE_1X = 1,
+    FONT_SIZE_2X = 2,
+    FONT_SIZE_3X = 3,
+    FONT_SIZE_4X = 4
+} font_size_t;
+
 // Function prototypes
 static void epaper_gpio_init(void);
 static esp_err_t epaper_spi_init(void);
@@ -66,6 +74,8 @@ static void epaper_clear(void);
 static void epaper_sleep(void);
 static void writeScreenBuffer(uint8_t command, uint8_t value);
 static void full_update();
+static void epaper_draw_string_to_buffer(uint8_t *image_data, const char *text, uint16_t x, uint16_t y, font_size_t size);
+static void epaper_draw_string(const char *text, uint16_t x, uint16_t y, font_size_t size);
 
 
 // GPIO initialization
@@ -191,11 +201,13 @@ static void epaper_write_data_buffer_chunked(const uint8_t command, const uint8_
 {
     if (length == 0) return;
     
-    // gpio_set_level(EPAPER_DC_PIN, 1);  // DC high for data
     epaper_set_memory_area(0, 0, EPD_WIDTH - 1, EPD_HEIGHT - 1);
     uint32_t bytes_sent = 0;
     epaper_write_command(command);
+    
     gpio_set_level(EPAPER_CS_PIN, 0);  // start comms
+    gpio_set_level(EPAPER_DC_PIN, 1);  // DC HIGH for data bytes
+    
     while (bytes_sent < length) {
         uint32_t chunk_size = length - bytes_sent;
         
@@ -308,6 +320,7 @@ static void writeScreenBuffer(uint8_t command, uint8_t value)
     epaper_set_memory_area(0, 0, EPD_WIDTH - 1, EPD_HEIGHT - 1);
     epaper_write_command(command);
     gpio_set_level(EPAPER_CS_PIN, 0);  // CS start comms
+    gpio_set_level(EPAPER_DC_PIN, 1);  // DC HIGH for data bytes
     for (uint32_t i = 0; i < ((uint32_t) EPD_WIDTH * (uint32_t) EPD_HEIGHT / 8) ; i++)
     {
         esp_err_t ret;
@@ -406,6 +419,245 @@ static void epaper_draw_test_pattern(void)
     ESP_LOGI(TAG, "Test pattern displayed");
 }
 
+static void epaper_set_pixel(uint8_t *buffer, uint16_t x, uint16_t y)
+{
+    if (x >= EPD_WIDTH || y >= EPD_HEIGHT) {
+        return;
+    }
+
+    uint32_t byte_index = (y * EPD_WIDTH + x) / 8;
+    uint8_t bit_mask = 1 << (7 - (x & 7));
+    buffer[byte_index] &= ~bit_mask;
+}
+
+static const uint8_t font5x7[96][5] = {
+    {0x00,0x00,0x00,0x00,0x00}, // space
+    {0x00,0x00,0x5F,0x00,0x00}, // !
+    {0x00,0x07,0x00,0x07,0x00}, // "
+    {0x14,0x7F,0x14,0x7F,0x14}, // #
+    {0x24,0x2A,0x7F,0x2A,0x12}, // $
+    {0x23,0x13,0x08,0x64,0x62}, // %
+    {0x36,0x49,0x55,0x22,0x50}, // &
+    {0x00,0x05,0x03,0x00,0x00}, // '
+    {0x00,0x1C,0x22,0x41,0x00}, // (
+    {0x00,0x41,0x22,0x1C,0x00}, // )
+    {0x14,0x08,0x3E,0x08,0x14}, // *
+    {0x08,0x08,0x3E,0x08,0x08}, // +
+    {0x00,0x50,0x30,0x00,0x00}, // ,
+    {0x08,0x08,0x08,0x08,0x08}, // -
+    {0x00,0x60,0x60,0x00,0x00}, // .
+    {0x20,0x10,0x08,0x04,0x02}, // /
+    {0x3E,0x51,0x49,0x45,0x3E}, // 0
+    {0x00,0x42,0x7F,0x40,0x00}, // 1
+    {0x42,0x61,0x51,0x49,0x46}, // 2
+    {0x21,0x41,0x45,0x4B,0x31}, // 3
+    {0x18,0x14,0x12,0x7F,0x10}, // 4
+    {0x27,0x45,0x45,0x45,0x39}, // 5
+    {0x3C,0x4A,0x49,0x49,0x30}, // 6
+    {0x01,0x71,0x09,0x05,0x03}, // 7
+    {0x36,0x49,0x49,0x49,0x36}, // 8
+    {0x06,0x49,0x49,0x29,0x1E}, // 9
+    {0x00,0x36,0x36,0x00,0x00}, // :
+    {0x00,0x56,0x36,0x00,0x00}, // ;
+    {0x08,0x14,0x22,0x41,0x00}, // <
+    {0x14,0x14,0x14,0x14,0x14}, // =
+    {0x00,0x41,0x22,0x14,0x08}, // >
+    {0x02,0x01,0x51,0x09,0x06}, // ?
+    {0x32,0x49,0x79,0x41,0x3E}, // @
+    {0x7E,0x11,0x11,0x11,0x7E}, // A
+    {0x7F,0x49,0x49,0x49,0x36}, // B
+    {0x3E,0x41,0x41,0x41,0x22}, // C
+    {0x7F,0x41,0x41,0x22,0x1C}, // D
+    {0x7F,0x49,0x49,0x49,0x41}, // E
+    {0x7F,0x09,0x09,0x09,0x01}, // F
+    {0x3E,0x41,0x49,0x49,0x7A}, // G
+    {0x7F,0x08,0x08,0x08,0x7F}, // H
+    {0x00,0x41,0x7F,0x41,0x00}, // I
+    {0x20,0x40,0x41,0x3F,0x01}, // J
+    {0x7F,0x08,0x14,0x22,0x41}, // K
+    {0x7F,0x40,0x40,0x40,0x40}, // L
+    {0x7F,0x02,0x04,0x02,0x7F}, // M
+    {0x7F,0x04,0x08,0x10,0x7F}, // N
+    {0x3E,0x41,0x41,0x41,0x3E}, // O
+    {0x7F,0x09,0x09,0x09,0x06}, // P
+    {0x3E,0x41,0x51,0x21,0x5E}, // Q
+    {0x7F,0x09,0x19,0x29,0x46}, // R
+    {0x46,0x49,0x49,0x49,0x31}, // S
+    {0x01,0x01,0x7F,0x01,0x01}, // T
+    {0x3F,0x40,0x40,0x40,0x3F}, // U
+    {0x1F,0x20,0x40,0x20,0x1F}, // V
+    {0x3F,0x40,0x38,0x40,0x3F}, // W
+    {0x63,0x14,0x08,0x14,0x63}, // X
+    {0x07,0x08,0x70,0x08,0x07}, // Y
+    {0x61,0x51,0x49,0x45,0x43}, // Z
+    {0x00,0x7F,0x41,0x41,0x00}, // [
+    {0x02,0x04,0x08,0x10,0x20}, // 
+    {0x00,0x41,0x41,0x7F,0x00}, // ]
+    {0x04,0x02,0x01,0x02,0x04}, // ^
+    {0x40,0x40,0x40,0x40,0x40}, // _
+    {0x00,0x03,0x07,0x08,0x00}, // `
+    {0x20,0x54,0x54,0x54,0x78}, // a
+    {0x7F,0x48,0x44,0x44,0x38}, // b
+    {0x38,0x44,0x44,0x44,0x20}, // c
+    {0x38,0x44,0x44,0x48,0x7F}, // d
+    {0x38,0x54,0x54,0x54,0x18}, // e
+    {0x08,0x7E,0x09,0x01,0x02}, // f
+    {0x0C,0x52,0x52,0x52,0x3E}, // g
+    {0x7F,0x08,0x04,0x04,0x78}, // h
+    {0x00,0x44,0x7D,0x40,0x00}, // i
+    {0x20,0x40,0x44,0x3D,0x00}, // j
+    {0x7F,0x10,0x28,0x44,0x00}, // k
+    {0x00,0x41,0x7F,0x40,0x00}, // l
+    {0x7C,0x04,0x18,0x04,0x78}, // m
+    {0x7C,0x08,0x04,0x04,0x78}, // n
+    {0x38,0x44,0x44,0x44,0x38}, // o
+    {0x7C,0x14,0x14,0x14,0x08}, // p
+    {0x08,0x14,0x14,0x18,0x7C}, // q
+    {0x7C,0x08,0x04,0x04,0x08}, // r
+    {0x48,0x54,0x54,0x54,0x20}, // s
+    {0x04,0x3F,0x44,0x40,0x20}, // t
+    {0x3C,0x40,0x40,0x20,0x7C}, // u
+    {0x1C,0x20,0x40,0x20,0x1C}, // v
+    {0x3C,0x40,0x30,0x40,0x3C}, // w
+    {0x44,0x28,0x10,0x28,0x44}, // x
+    {0x0C,0x50,0x50,0x50,0x3C}, // y
+    {0x44,0x64,0x54,0x4C,0x44}, // z
+    {0x00,0x08,0x36,0x41,0x00}, // {
+    {0x00,0x00,0x7F,0x00,0x00}, // |
+    {0x00,0x41,0x36,0x08,0x00}, // }
+    {0x08,0x04,0x08,0x10,0x08}, // ~
+};
+
+// Draw string on existing buffer (does not allocate or display)
+static void epaper_draw_string_to_buffer(uint8_t *image_data, const char *text, uint16_t x, uint16_t y, font_size_t size)
+{
+    if (text == NULL) {
+        ESP_LOGW(TAG, "No text provided to draw");
+        return;
+    }
+
+    if (image_data == NULL) {
+        ESP_LOGE(TAG, "Image buffer is NULL");
+        return;
+    }
+
+    const uint16_t base_char_width = 5;
+    const uint16_t base_char_height = 7;
+    const uint16_t char_width = base_char_width * size;
+    const uint16_t char_height = base_char_height * size;
+    const uint16_t spacing_x = 1 * size;
+    const uint16_t spacing_y = 2 * size;
+    uint16_t cursor_x = x;
+    uint16_t cursor_y = y;
+
+    for (const char *p = text; *p != '\0'; p++) {
+        char c = *p;
+        if (c == '\n') {
+            cursor_x = x;
+            cursor_y += char_height + spacing_y;
+            if (cursor_y + char_height >= EPD_HEIGHT) {
+                break;
+            }
+            continue;
+        }
+
+        if ((uint8_t)c < 32 || (uint8_t)c > 127) {
+            c = '?';
+        }
+
+        if (cursor_x + char_width >= EPD_WIDTH) {
+            cursor_x = x;
+            cursor_y += char_height + spacing_y;
+            if (cursor_y + char_height >= EPD_HEIGHT) {
+                break;
+            }
+        }
+
+        const uint8_t *glyph = font5x7[(uint8_t)c - 32];
+        for (uint16_t col = 0; col < base_char_width; col++) {
+            uint8_t column = glyph[col];
+            for (uint16_t row = 0; row < base_char_height; row++) {
+                if (column & (1 << row)) {
+                    for (uint16_t sx = 0; sx < size; sx++) {
+                        for (uint16_t sy = 0; sy < size; sy++) {
+                            epaper_set_pixel(image_data, cursor_x + col * size + sx, cursor_y + row * size + sy);
+                        }
+                    }
+                }
+            }
+        }
+
+        cursor_x += char_width + spacing_x;
+    }
+}
+
+static void epaper_draw_string(const char *text, uint16_t x, uint16_t y, font_size_t size)
+{
+    if (text == NULL) {
+        ESP_LOGW(TAG, "No text provided to draw");
+        return;
+    }
+
+    uint8_t *image_data = malloc(EPD_BUFFER_SIZE);
+    if (image_data == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate buffer for text rendering");
+        return;
+    }
+    memset(image_data, 0xFF, EPD_BUFFER_SIZE);
+
+    const uint16_t base_char_width = 5;
+    const uint16_t base_char_height = 7;
+    const uint16_t char_width = base_char_width * size;
+    const uint16_t char_height = base_char_height * size;
+    const uint16_t spacing_x = 1 * size;
+    const uint16_t spacing_y = 2 * size;
+    uint16_t cursor_x = x;
+    uint16_t cursor_y = y;
+
+    for (const char *p = text; *p != '\0'; p++) {
+        char c = *p;
+        if (c == '\n') {
+            cursor_x = x;
+            cursor_y += char_height + spacing_y;
+            if (cursor_y + char_height >= EPD_HEIGHT) {
+                break;
+            }
+            continue;
+        }
+
+        if ((uint8_t)c < 32 || (uint8_t)c > 127) {
+            c = '?';
+        }
+
+        if (cursor_x + char_width >= EPD_WIDTH) {
+            cursor_x = x;
+            cursor_y += char_height + spacing_y;
+            if (cursor_y + char_height >= EPD_HEIGHT) {
+                break;
+            }
+        }
+
+        const uint8_t *glyph = font5x7[(uint8_t)c - 32];
+        for (uint16_t col = 0; col < base_char_width; col++) {
+            uint8_t column = glyph[col];
+            for (uint16_t row = 0; row < base_char_height; row++) {
+                if (column & (1 << row)) {
+                    for (uint16_t sx = 0; sx < size; sx++) {
+                        for (uint16_t sy = 0; sy < size; sy++) {
+                            epaper_set_pixel(image_data, cursor_x + col * size + sx, cursor_y + row * size + sy);
+                        }
+                    }
+                }
+            }
+        }
+
+        cursor_x += char_width + spacing_x;
+    }
+
+    epaper_display(image_data);
+    free(image_data);
+}
+
 // Put EPD to sleep
 static void epaper_sleep(void)
 {
@@ -436,22 +688,47 @@ void epaper_main_task(void *pvParameters)
     
     // Clear display first
     epaper_clear();
-    vTaskDelay(pdMS_TO_TICKS(5000));
+    vTaskDelay(pdMS_TO_TICKS(1000));
     
-    // Draw test pattern
-    epaper_draw_test_pattern();
+    // Create persistent buffer for multiple text strings
+    uint8_t *screen_buffer = malloc(EPD_BUFFER_SIZE);
+    if (screen_buffer == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate screen buffer");
+        vTaskDelete(NULL);
+        return;
+    }
+    
+    // Fill buffer with white background
+    memset(screen_buffer, 0xFF, EPD_BUFFER_SIZE);
+    
+    // Draw first string
+    ESP_LOGI(TAG, "Drawing first text: Eyas Adriana wa Nur");
+    epaper_draw_string_to_buffer(screen_buffer, "Prayer Times", 1, 1, FONT_SIZE_3X);
+    
+    // Draw second string
+    ESP_LOGI(TAG, "Drawing second text: Eyas Adriana wa Nur second");
+    epaper_draw_string_to_buffer(screen_buffer, "Fajr:", 0, 40, FONT_SIZE_2X);
+    epaper_draw_string_to_buffer(screen_buffer, "Dhuhur:", 0, 80, FONT_SIZE_2X);
+    epaper_draw_string_to_buffer(screen_buffer, "Asr:", 0, 120, FONT_SIZE_2X);
+    epaper_draw_string_to_buffer(screen_buffer, "Ma3'rig:", 0, 160, FONT_SIZE_2X);
+    epaper_draw_string_to_buffer(screen_buffer, "3isha2:", 0, 200, FONT_SIZE_2X);
+    
+    // Display the complete buffer once
+    ESP_LOGI(TAG, "Displaying buffer with both strings");
+    epaper_display(screen_buffer);
+    free(screen_buffer);
     
     // Wait
-    ESP_LOGI(TAG, "Waiting 10 seconds...");
-    vTaskDelay(pdMS_TO_TICKS(10000));
+    ESP_LOGI(TAG, "Waiting 15 seconds...");
+    vTaskDelay(pdMS_TO_TICKS(15000));
     
     // Clear display again
-    epaper_clear();
+    // epaper_clear();
     
-    // Wait before sleep
-    vTaskDelay(pdMS_TO_TICKS(5000));
+    // // Wait before sleep
+    // vTaskDelay(pdMS_TO_TICKS(5000));
 
-    epaper_clear();
+    // epaper_clear();
     
     // Sleep
     epaper_sleep();
